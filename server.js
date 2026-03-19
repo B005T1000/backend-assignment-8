@@ -1,11 +1,19 @@
 const express = require('express');
-const { db, Project, Task } = require('./database/setup');
+const session = require('express-session');
+const bcrypt = require('bcryptjs');
+const { db, User, Project, Task } = require('./database/setup');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json());
+app.use(session({
+    secret: 'your-secret-key',
+    resave: false,
+    saveUninitialized: true,
+    cookie: { secure: false }
+}));
 
 // Test database connection
 async function testConnection() {
@@ -19,10 +27,96 @@ async function testConnection() {
 
 testConnection();
 
+// Authentication middleware
+const authenticate = (req, res, next) => {
+    if (!req.session.userId) {
+        return res.status(401).json({ error: 'Unauthorized - Please log in' });
+    }
+    
+    // Attach user information to request object
+    req.user = {
+        id: req.session.userId,
+        username: req.session.username,
+        email: req.session.email
+    };
+    
+    next();
+};
+
+// AUTH ROUTES
+
+// POST /api/register - Register a new user
+app.post('/api/register', async (req, res) => {
+    try {
+        const { username, email, password } = req.body;
+        
+        // Validate that email is unique
+        const existingUser = await User.findOne({ where: { email } });
+        if (existingUser) {
+            return res.status(400).json({ error: 'Email already in use' });
+        }
+        
+        // Hash the password
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        // Create new user
+        const newUser = await User.create({
+            username,
+            email,
+            password: hashedPassword
+        });
+        
+        res.status(201).json({ message: 'User registered successfully', user: { id: newUser.id, username: newUser.username, email: newUser.email } });
+    } catch (error) {
+        console.error('Error registering user:', error);
+        res.status(500).json({ error: 'Failed to register user' });
+    }
+});
+
+// POST /api/login - Login user
+app.post('/api/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        
+        // Find user by email
+        const user = await User.findOne({ where: { email } });
+        if (!user) {
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+        
+        // Compare passwords
+        const passwordMatch = await bcrypt.compare(password, user.password);
+        if (!passwordMatch) {
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+        
+        // Create user session
+        req.session.userId = user.id;
+        req.session.username = user.username;
+        req.session.email = user.email;
+        
+        res.status(200).json({ message: 'Login successful', user: { id: user.id, username: user.username, email: user.email } });
+    } catch (error) {
+        console.error('Error logging in user:', error);
+        res.status(500).json({ error: 'Failed to login' });
+    }
+});
+
+// POST /api/logout - Logout user
+app.post('/api/logout', (req, res) => {
+    req.session.destroy((err) => {
+        if (err) {
+            console.error('Error destroying session:', err);
+            return res.status(500).json({ error: 'Failed to logout' });
+        }
+        res.status(200).json({ message: 'Logout successful' });
+    });
+});
+
 // PROJECT ROUTES
 
 // GET /api/projects - Get all projects
-app.get('/api/projects', async (req, res) => {
+app.get('/api/projects', authenticate, async (req, res) => {
     try {
         const projects = await Project.findAll();
         res.json(projects);
